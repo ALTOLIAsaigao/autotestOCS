@@ -122,8 +122,17 @@ python ocs_schedule.py --play-minutes 1 # 覆盖播放时长（测流程用）
 | `ocs_debug_start.bat` | 以管理员身份带调试端口重启 OCS |
 | `ocs_video_test.py` | 点击步骤的选择器 + 播放器定位 |
 | `ocs_click_play.py` | 纯标准库 CDP 客户端，点 OCS 自己的 ▶、看实例状态 |
+| `ocs_net_check.py` | 排查"到超星这条网路通不通"：DNS / TCP / 重定向链 / 代理 / 时钟 |
+| `ocs_clear_cookies.py` | 清掉那只浏览器里超星的 cookie，治登录重定向死循环 |
 | `ocs_eval.py` / `ocs_probe.py` | 调试用：在任意页面 / 每个 frame 里跑 JS |
 | `config.example.json` | 配置模板，复制成 `config.json` 改 |
+
+## 出问题了先看这个
+
+**`page.goto: net::ERR_TOO_MANY_REDIRECTS at http://i.chaoxing.com/`** —— 这是 OCS 自己那个超星自动登录脚本报的，跟本项目的代码无关（它挂在 OCS 里的用户脚本上），意思是 Chrome 跟了 20 跳重定向还没落地。两条路分开查：
+
+1. `python ocs_net_check.py` —— 网络到不到得了超星。链路干净（几跳停在登录页 200）说明是下面第 2 条；链路里落到非超星域名、或一直 302 到某个认证页，那就是服务器网络被截了（校园网认证 / 代理 / DNS 劫持）。
+2. **cookie 半失效**：`passport2` 还留着"已登录"的 cookie，`i.chaoxing.com` 的会话却已经作废，两边互相踢皮球。清掉重登：`python ocs_clear_cookies.py`（没有调试端口时就删 `%APPDATA%\OCS Desktop\Network\Cookies`）。同一个超星账号在多台机器同时登录也会这样，得保证同时只有一处在用。
 
 ## 已知限制
 
