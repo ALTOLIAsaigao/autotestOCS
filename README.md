@@ -1,0 +1,131 @@
+# autotestOCS
+
+从外部驱动 [OCS Desktop](https://www.ocsjs.com/) 拉起的那只浏览器，在本机的真实登录态下走完超星课程的视频播放，最后回课程首页读今日积分，判定"今天有没有刷满"。
+
+判定标准只有一条：**课程首页的今日积分有没有到目标分**（默认 32，也就是超星面板上写的"每日积分上限32分"）。到了就算通过，没到就推一条 Bark 通知，通知里带着当次报告路径。
+
+整套东西不依赖 OCS 自带的浏览器监控（那个在 4G 内存的机器上跑不动），内存压力和开一个普通 Chrome 一样。
+
+## 它是怎么接上去的
+
+OCS 拉起的浏览器是它自己用 Playwright `launchPersistentContext` 起的，走的是 `--remote-debugging-pipe`（匿名管道），**默认没有任何 TCP 端口**，外部 CDP 客户端连不上。所以链路是：
+
+```
+[1] CDP 连 OCS 渲染进程(9222) ──► 点实例行上的 ▶
+[2] OCS fork script.js ──► Playwright launchPersistentContext ──► Chrome
+        └─ ocs_patch.py 给它加的启动参数：--remote-debugging-port=9223
+[3] 等超星自动登录脚本把页面带到 i.chaoxing.com（**只轮询 /json，先不接管**）
+[4] Playwright connect_over_cdp(9223) 接管那个 context
+[5] 点四步进视频页 ──► 确认在播 ──► 之后这个页面一句 JS 都不发
+[6] 放够 play_minutes 分钟 ──► 关掉视频页 ──► 回课程首页点「首页」并刷新
+[7] 读 p#dayScore ──► 到目标分 = 通过；没到推 Bark ──► 关浏览器
+```
+
+几个非做不可的细节，都是实测撞出来的：
+
+- **不能一 attach 就接管**。超星的自动登录脚本进来先跳转，正赶上它跳转中途附加上去，那个页面会卡死在 `about:blank`。先纯 HTTP 轮询 `/json` 等 title/url 到位，再 attach。
+- **播放期间别碰那个页面**。反复 evaluate / 截图，超星那边会把登录页拉起来，播放直接断。所以判定改成看最终积分，而不是盯着播放器采样。
+- **新标签页要挂 `expect_page()`**。课程卡片和知识点封面都是 `<a target="_blank">`，点一下另开标签页；光轮询 URL 差集在浏览器忙的时候会漏。
+- **`browser.close()` 关不掉这只 Chrome**。`connect_over_cdp` 拿到的 browser 调 `close()` 只是断连接，进程还活着、9223 还在响应，下一轮接管会认到上一轮残留的页签。真正关掉要发 CDP `Browser.close`（`ocs_drive.py:close_browser()` 干的就是这个，关不掉会推 Bark）。
+- **起点页要校正**。OCS 在当天没刷满时会自己把浏览器拉起来放视频，接管时常常已经开着上一轮的 `tsjy` / `studentstudy` 页签，按 URL 挑目标页会挑错，所以接管后先认 `i.chaoxing.com` 的页签、顺手把残留页签收掉。
+
+## 装
+
+1. **Python 依赖**
+
+   ```
+   python -m pip install -r requirements.txt
+   ```
+
+   不需要 `playwright install` —— 这套用的是 OCS 自带的 Chrome for Testing，路径从 OCS 的配置里读，不会再下一份 Chromium。
+
+2. **给 OCS 打补丁**（让它拉起的浏览器多听一个调试端口）
+
+   ```
+   python ocs_patch.py --ocs-dir "D:\你的\OCS Desktop" --write-port-file
+   ```
+
+   自动找安装目录也可以，直接 `python ocs_patch.py`。原文件会备份成 `index.js.orig`，重复运行不会重复打。补丁是**可选性**的：端口来源先读环境变量 `OCS_BROWSER_DEBUG_PORT`，再读 `%APPDATA%\OCS Desktop\browser-debug-port.txt`，两个都没有时行为和原生一模一样。
+
+   > 这个文件是每次点 ▶ 时由 OCS fork 出来的 `script.js` 重新加载的，所以**打完不用重启 OCS**。
+
+3. **把 OCS 带着调试端口起起来**
+
+   ```
+   ocs_debug_start.bat        （右键，以管理员身份运行；脚本自己也会请求提权）
+   ```
+
+   它会关掉旧 OCS、带上 `--remote-debugging-port=9222` 重启、然后等端口就绪。OCS 装在哪用 `ocs_path.txt`（一行完整路径）或环境变量 `OCS_EXE` 告诉它。
+
+   验证一下：`python ocs_click_play.py --list`
+
+4. **配置**
+
+   ```
+   copy config.example.json config.json
+   ```
+
+   然后改 `config.json`：课程名、视频名、播放时长、目标分、Bark 推送地址、要跑哪些实例、各在几点几分。`config.json` 已经在 `.gitignore` 里，不会进仓库。
+
+## 跑
+
+```
+python ocs_drive.py                     # 单个实例跑一轮（默认 34 分钟）
+python ocs_drive.py --play-minutes 1    # 短测：流程全走，只放 1 分钟
+python ocs_drive.py --browser 33        # 换一个 OCS 实例
+python ocs_drive.py --dry-run           # 只走到点击流程结束，不看积分
+python ocs_drive.py --keep-open         # 结束不关浏览器
+python ocs_drive.py --no-bark           # 这一轮不推通知
+python ocs_drive.py --list              # 看 OCS 里实例的当前状态
+```
+
+退出码：`0` 通过（积分到目标分），`1` 没通过，`2` 连 OCS / 浏览器都起不来。
+
+输出全在 `runs/<时间戳>/`：`full.log` 日志、`shots/` 各步骤截图、`report.json` 结论。
+
+## 多实例排期
+
+4G 的机器同时只能跑一只 OCS 浏览器，所以 `ocs_schedule.py` 是**串行**的：到点拉起一个 → 跑完（浏览器也关干净）→ 再等下一个的点。时间就在 `config.json` 的 `instances` 里：
+
+```json
+"instances": [
+  { "name": "22", "start_at": "01:00", "enabled": true },
+  { "name": "33", "start_at": "07:00", "enabled": false },
+  { "name": "44", "start_at": "13:00", "enabled": false }
+]
+```
+
+`name` 要和 OCS 界面上那个实例名一模一样。每个实例还能单独覆盖 `play_minutes` / `course_name` / `video_name` / `target_score`。`enabled` 是开关。
+
+```
+python ocs_schedule.py                  # 常驻，跨天自动接着跑
+python ocs_schedule.py --list           # 只看今天的排期表，不起任何东西
+python ocs_schedule.py --once           # 今天的跑完就退出（挂 Windows 计划任务用这个）
+python ocs_schedule.py --force 33       # 不管几点，现在立刻跑这个实例
+python ocs_schedule.py --play-minutes 1 # 覆盖播放时长（测流程用）
+```
+
+跑过的实例记在 `runs/schedule_YYYYMMDD.json`，调度器重启不会重复跑同一天。
+
+两个注意事项：
+
+- **两个实例的时间至少隔 40 分钟**。34 分钟播放加点击和收尾大约 36 分钟，排太密后面那个的点会撞上前一个还在跑。
+- **别把实例排在 00:00 附近**。积分每天零点归零，跨零点那一轮回来查分读到的已经是新一天的数，必然判失败。最早排到 00:40 之后。
+
+## 文件
+
+| 文件 | 干什么的 |
+| --- | --- |
+| `ocs_drive.py` | 外部驱动主入口：起浏览器 → 点击 → 等待 → 查分 → 收尾 |
+| `ocs_schedule.py` | 多实例按时刻轮流开（串行） |
+| `ocs_patch.py` | 给 OCS 的 `worker/index.js` 打调试端口补丁 |
+| `ocs_debug_start.bat` | 以管理员身份带调试端口重启 OCS |
+| `ocs_video_test.py` | 点击步骤的选择器 + 播放器定位 |
+| `ocs_click_play.py` | 纯标准库 CDP 客户端，点 OCS 自己的 ▶、看实例状态 |
+| `ocs_eval.py` / `ocs_probe.py` | 调试用：在任意页面 / 每个 frame 里跑 JS |
+| `config.example.json` | 配置模板，复制成 `config.json` 改 |
+
+## 已知限制
+
+- 只在 Windows + OCS Desktop v2.9.x（Chrome 134/137）上验过。OCS 换版本后 `ocs_patch.py` 的插入点可能变，脚本会提示；选择器在 `ocs_video_test.py` 里，超星改版可能会失效，此时 `runs/<时间戳>/shots/` 里的截图就是现场。
+- 判定靠"今日积分"这个前端展示值，不是后端的播放上报。积分没到就只推通知，不会自动重试 —— 重试策略交给调度器（多实例、多个时间点）。

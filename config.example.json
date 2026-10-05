@@ -1,0 +1,29 @@
+{
+  "browser_name": "22",
+
+  "course_name": "课程名（超星课程卡片上显示的那个名字）",
+  "video_name": "视频名（知识点封面上的标题）",
+
+  "start_url": "",
+
+  "play_minutes": 34,
+  "target_score": 32,
+  "login_wait_seconds": 60,
+  "video_wait_seconds": 300,
+
+  "schedule": {
+    "poll_seconds": 20,
+    "grace_minutes": 60
+  },
+
+  "instances": [
+    { "name": "22", "start_at": "01:00", "enabled": true },
+    { "name": "33", "start_at": "07:00", "enabled": false },
+    { "name": "44", "start_at": "13:00", "enabled": false }
+  ],
+
+  "bark_url": "https://api.day.app/你的BarkKey/",
+  "bark_level": "timeSensitive",
+  "bark_group": "OCS视频测试",
+  "bark_on_success": false
+}

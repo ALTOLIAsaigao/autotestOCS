@@ -1,0 +1,12 @@
+# OCS 视频播放稳定性测试
+#
+# 装依赖：
+#   python -m pip install -r requirements.txt
+#
+# 换国内镜像（带宽受限的服务器建议加）：
+#   python -m pip install -r requirements.txt -i https://pypi.tuna.tsinghua.edu.cn/simple
+#
+# 注意：不需要 `playwright install`。本脚本用 OCS 自带的 Chrome for Testing，
+# 路径从 OCS 的 config.json 自动读取，不会再下载一份 Chromium。
+
+playwright>=1.40

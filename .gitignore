@@ -1,0 +1,27 @@
+# 配置里有 Bark 推送密钥、真实课程名和超星账号标识（personId/userId/classId），
+# 不提交。新环境照着 config.example.json 复制一份改即可。
+config.json
+
+# OCS 安装路径提示（各家机器不一样，一行完整路径）
+ocs_path.txt
+
+# 运行时产物
+runs/
+reports/
+*.log
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# 原文件备份（ocs_patch.py 打补丁时生成的）
+*.orig
+
+# 本地助手相关，跟项目本身无关
+.claude/
+CLAUDE.md
+
+# 顺手排除掉的工作区杂项
+刚刚跟一个不愿帮忙的agent的对话.txt
