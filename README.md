@@ -67,6 +67,30 @@ OCS 拉起的浏览器是它自己用 Playwright `launchPersistentContext` 起�
 
    然后改 `config.json`：课程名、视频名、播放时长、目标分、Bark 推送地址、要跑哪些实例、各在几点几分。`config.json` 已经在 `.gitignore` 里，不会进仓库。
 
+## 装到服务器上
+
+**放哪个目录**:放一个**独立的纯英文目录**,比如 `C:\autotestOCS` —— **别放在 OCS 的安装目录里**。原因:
+
+- OCS 升级 / 重装会把那个目录覆盖掉,你的代码和 `runs/` 里的报告跟着一起没。
+- OCS 多半装在 `Program Files` 或者带中文的路径下,往那儿写要提权;项目代码没必要跟着受这个约束。
+- `ocs_patch.py` 往 OCS 目录里写的是补丁和 `index.js.orig` —— 那是**补丁**该待的地方,不是**项目**该待的地方。
+
+放哪都行,脚本会自己去找 OCS 目录(环境变量 `OCS_EXE` → 本目录的 `ocs_path.txt` → 常见安装路径);实在找不到就 `python ocs_patch.py --ocs-dir "C:\...\OCS Desktop"`,或者把路径写进 `ocs_path.txt`(一行完整路径)。路径**别带中文和空格**,也别放需要管理员才能写的目录。
+
+**`config.json` 不在仓库里**(里面有 Bark key 和你的账号标识),clone 完自己造一份:
+
+```
+copy config.example.json config.json
+notepad config.json
+```
+
+**服务器上如果超星只认某个出口**(机房 IP 被拉黑、必须走代理才能进登录页):
+
+1. mihomo 开**系统代理** + 切**全局模式**,或者保持规则模式加一条超星域名规则指向节点。这两件事是分开的:全局模式管"送到 mihomo 之后怎么走",系统代理管"送不送给 mihomo"。**只切全局、系统代理没开,等于没切。**
+2. **OCS 和 mihomo 必须跑在同一个 Windows 用户下**。系统代理写在 `HKCU` 里,是"当前用户"的设置;OCS 要是跑在别的账号或 SYSTEM 下(计划任务、服务),它看不到这个代理 —— 现象是"明明代理通了,OCS 还是被拦"。
+3. `ocs_net_check.py` 用 urllib,**只读环境变量、不读系统代理注册表**,所以它会报直连的结果。判断代理生不生效别用它,用 `curl.exe -x http://127.0.0.1:<mixed-port> https://myip.ipip.net`。
+4. 全局模式下**所有**出网流量都走节点,包括跟超星无关的。视频那 34 分钟是实打实的出口流量,按流量计费的机器上要算一下。
+
 ## 跑
 
 ```
