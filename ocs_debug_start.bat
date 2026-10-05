@@ -98,7 +98,10 @@ echo [*] 等待调试端口 %PORT% ...
 set /a N=0
 :waitport
 set /a N+=1
-powershell -NoProfile -Command "try{ (Invoke-WebRequest -UseBasicParsing -TimeoutSec 2 'http://127.0.0.1:%PORT%/json/version').StatusCode }catch{ exit 1 }" >nul 2>&1
+rem  这里不能用 Invoke-WebRequest —— 它走系统代理，机器上开着代理时连打 127.0.0.1
+rem  都会被丢给代理（回 502），于是明明起来了却一直等不到，最后误报端口没起。
+rem  显式把 Proxy 设成 $null 才是真的直连。
+powershell -NoProfile -Command "$r=[Net.WebRequest]::Create('http://127.0.0.1:%PORT%/json/version'); $r.Proxy=$null; $r.Timeout=2000; try{ $r.GetResponse().Close() }catch{ exit 1 }" >nul 2>&1
 if not errorlevel 1 goto ready
 if %N% GEQ 30 (
     echo [x] 等了一分多钟，调试端口还是没起来。
