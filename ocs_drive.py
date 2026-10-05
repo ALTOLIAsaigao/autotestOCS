@@ -457,9 +457,16 @@ def main() -> int:
     ap.add_argument("--list", action="store_true", help="只看 OCS 里实例的状态，不启动")
     ap.add_argument("--keep-open", action="store_true", help="结束后不关浏览器（默认关）")
     ap.add_argument("--no-bark", action="store_true", help="这一轮不推 Bark（短测验证用）")
+    ap.add_argument("--test-bark", action="store_true", help="只推一条 Bark 试试通路，不跑浏览器")
     ap.add_argument("--video-wait", type=float, default=cfg.get("video_wait_seconds", 300),
                     help="进视频页后等播放器把 <video> 建出来的最长秒数")
     args = ap.parse_args()
+
+    if args.test_bark:
+        print("[*] 只测 Bark 通路，不跑浏览器")
+        ok = notify(cfg, "OCS 测试", "Bark 通路测试，收到这条就可以忽略", print)
+        print(f"[{'✓' if ok else '✗'}] Bark {'通了' if ok else '不通 —— 看上面那几行'}")
+        return 0 if ok else 1
 
     if args.list:
         rc = subprocess.run([sys.executable, str(LAUNCHER), "--port", str(args.ocs_port), "--dump"],
