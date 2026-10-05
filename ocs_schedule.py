@@ -50,6 +50,8 @@ import urllib.request
 from datetime import datetime, timedelta
 from pathlib import Path
 
+from ocs_click_play import urlopen_local  # 打本机的请求直连，绕开系统代理
+
 HERE = Path(__file__).resolve().parent
 DRIVER = HERE / "ocs_drive.py"
 STATE_DIR = HERE / "runs"
@@ -126,7 +128,7 @@ def save_state(st: dict):
 # ---------------------------------------------------------------------------
 def port_alive(port: int, timeout: float = 3.0) -> bool:
     try:
-        with urllib.request.urlopen(f"http://127.0.0.1:{port}/json/version", timeout=timeout) as r:
+        with urlopen_local(f"http://127.0.0.1:{port}/json/version", timeout=timeout) as r:
             r.read()
         return True
     except Exception:
@@ -140,7 +142,7 @@ def kill_port(port: int) -> bool:
     log(f"[!] {port} 上还有浏览器活着，发 CDP Browser.close 收掉")
     try:
         from ocs_click_play import WebSocket
-        with urllib.request.urlopen(f"http://127.0.0.1:{port}/json/version", timeout=5) as r:
+        with urlopen_local(f"http://127.0.0.1:{port}/json/version", timeout=5) as r:
             v = json.loads(r.read().decode("utf-8"))
         ws = WebSocket(v["webSocketDebuggerUrl"])
         ws.connect()

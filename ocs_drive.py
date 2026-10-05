@@ -88,6 +88,7 @@ from ocs_video_test import (  # noqa: E402
     notify,
     safe_shot,
 )
+from ocs_click_play import urlopen_local  # noqa: E402  # 打本机的请求直连，绕开系统代理
 
 # 这些页面不是我们要操作的目标页
 SKIP_URL_PREFIX = ("chrome-extension://", "about:blank", "devtools://", "chrome://")
@@ -98,7 +99,7 @@ SKIP_URL_PREFIX = ("chrome-extension://", "about:blank", "devtools://", "chrome:
 # ---------------------------------------------------------------------------
 def port_version(port: int, timeout: float = 2.0):
     try:
-        with urllib.request.urlopen(f"http://127.0.0.1:{port}/json/version", timeout=timeout) as r:
+        with urlopen_local(f"http://127.0.0.1:{port}/json/version", timeout=timeout) as r:
             return json.loads(r.read().decode("utf-8"))
     except Exception:
         return None
@@ -159,7 +160,7 @@ def wait_port(port: int, seconds: float):
 def http_targets(port: int) -> list[dict]:
     """列目标列表。注意这是纯 HTTP，不会附着到任何页面上。"""
     try:
-        with urllib.request.urlopen(f"http://127.0.0.1:{port}/json", timeout=4) as r:
+        with urlopen_local(f"http://127.0.0.1:{port}/json", timeout=4) as r:
             return json.loads(r.read().decode("utf-8"))
     except Exception:
         return []

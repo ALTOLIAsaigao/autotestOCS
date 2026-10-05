@@ -376,8 +376,22 @@ def js_state(name: str) -> str:
 # --------------------------------------------------------------------------
 # 连到 OCS
 # --------------------------------------------------------------------------
+# 打本机的请求一律直连，不走系统代理。
+#
+# Windows 上 urllib 会去读注册表里的系统代理（ProxyEnable / ProxyServer），
+# 所以机器上只要开了系统代理，连 http://127.0.0.1:9222/json 这种本地请求都会被丢给
+# 代理 —— 代理再回头连它那头的 127.0.0.1:9222，当然连不上，回一个 502 Bad Gateway。
+# 看着像"OCS 没带调试端口启动"，其实请求压根没到本机。
+_LOCAL_OPENER = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+
+
+def urlopen_local(url: str, timeout: float = 5.0):
+    """打开本机（127.0.0.1）上的东西：强制直连，不受系统代理影响。"""
+    return _LOCAL_OPENER.open(url, timeout=timeout)
+
+
 def http_json(url: str, timeout: float = 5.0):
-    with urllib.request.urlopen(url, timeout=timeout) as r:
+    with urlopen_local(url, timeout=timeout) as r:
         return json.loads(r.read().decode("utf-8"))
 
 

@@ -88,7 +88,7 @@ notepad config.json
 
 1. mihomo 开**系统代理** + 切**全局模式**,或者保持规则模式加一条超星域名规则指向节点。这两件事是分开的:全局模式管"送到 mihomo 之后怎么走",系统代理管"送不送给 mihomo"。**只切全局、系统代理没开,等于没切。**
 2. **OCS 和 mihomo 必须跑在同一个 Windows 用户下**。系统代理写在 `HKCU` 里,是"当前用户"的设置;OCS 要是跑在别的账号或 SYSTEM 下(计划任务、服务),它看不到这个代理 —— 现象是"明明代理通了,OCS 还是被拦"。
-3. `ocs_net_check.py` 用 urllib,**只读环境变量、不读系统代理注册表**,所以它会报直连的结果。判断代理生不生效别用它,用 `curl.exe -x http://127.0.0.1:<mixed-port> https://myip.ipip.net`。
+3. **Windows 上 Python 的 urllib 会读注册表里的系统代理**,连打 `127.0.0.1` 的请求也会被丢给代理去。所以项目里访问本机调试端口的代码一律用 `ocs_click_play.urlopen_local()` 强制直连(`ocs_net_check.py` 那种要测真实出网路径的除外)。判断代理生不生效用 `curl.exe -x http://127.0.0.1:<mixed-port> https://myip.ipip.net`。
 4. 全局模式下**所有**出网流量都走节点,包括跟超星无关的。视频那 34 分钟是实打实的出口流量,按流量计费的机器上要算一下。
 
 ## 跑
@@ -152,6 +152,8 @@ python ocs_schedule.py --play-minutes 1 # 覆盖播放时长（测流程用）
 | `config.example.json` | 配置模板，复制成 `config.json` 改 |
 
 ## 出问题了先看这个
+
+**`连不上 http://127.0.0.1:9222/json`，底层错误是 `HTTP Error 502: Bad Gateway`** —— **502 是代理回给你的，不是"端口没起"**（端口没起会是 connection refused）。这台机器开着系统代理，而 Python 的 urllib 会读注册表里的系统代理，于是连打本机 9222 的请求也被丢给了代理。项目里的本地请求已经走 `urlopen_local()` 直连了；要是还报，查一下有没有 `HTTP_PROXY` / `HTTPS_PROXY` 环境变量（urllib 优先读环境变量）。
 
 **`page.goto: net::ERR_TOO_MANY_REDIRECTS at http://i.chaoxing.com/`** —— 这是 OCS 自己那个超星自动登录脚本报的，跟本项目的代码无关（它挂在 OCS 里的用户脚本上），意思是 Chrome 跟了 20 跳重定向还没落地。两条路分开查：
 
