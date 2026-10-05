@@ -210,18 +210,33 @@ def notify(cfg: dict, title: str, body: str, log=None) -> bool:
         params["group"] = cfg["bark_group"]
     if params:
         url += "?" + urllib.parse.urlencode(params)
-    try:
-        with urllib.request.urlopen(url, timeout=15) as r:
-            ok = r.status == 200
-        if log:
-            log(f"Bark 推送{'成功' if ok else '返回 ' + str(r.status)}：{title}")
-        return ok
-    except Exception as e:
-        if log:
-            log(f"⚠️ Bark 推送失败（不影响测试）：{type(e).__name__}: {e}")
-        if log:
-            log("   如果 api.day.app 在这台机器上不通，用你自建的 Bark 服务地址或走代理。")
-        return False
+    # 显式把系统代理带上，并在失败时把"到底走没走代理"记进日志。
+    # 服务器上直连 api.day.app 的证书链验不过（CERTIFICATE_VERIFY_FAILED），
+    # 走代理出去才是好的 —— 一出问题最先要看的就是这一条。
+    proxies = urllib.request.getproxies()
+    opener = urllib.request.build_opener(urllib.request.ProxyHandler(proxies))
+    last = None
+    for attempt in (1, 2):          # 代理那条路偶尔抖一下，给一次重试
+        try:
+            with opener.open(url, timeout=15) as r:
+                status = r.status
+            ok = status == 200
+            if log:
+                log(f"Bark 推送{'成功' if ok else '返回 ' + str(status)}：{title}")
+            return ok
+        except Exception as e:
+            last = e
+            if attempt == 1:
+                time.sleep(3)
+    if log:
+        log(f"⚠️ Bark 推送失败（不影响测试）：{type(last).__name__}: {last}")
+        log(f"   这次用的代理：{proxies or '（一个都没探测到 —— 是直连出去的）'}")
+        if not proxies:
+            log("   直连出口在这台机器上验不过证书 —— 确认 mihomo 的系统代理开着"
+                "（ProxyEnable=1 / ProxyServer=127.0.0.1:<mixed-port>）。")
+        else:
+            log("   代理是有的但还是不通 —— 看下 mihomo 那边（节点可用？全局模式还在？）。")
+    return False
 
 
 def profile_in_use(profile: Path) -> list[str]:
