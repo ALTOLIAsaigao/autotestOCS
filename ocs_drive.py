@@ -55,10 +55,12 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import re
 import subprocess
 import sys
 import time
+import traceback
 import urllib.request
 from datetime import datetime
 from pathlib import Path
@@ -87,6 +89,7 @@ from ocs_video_test import (  # noqa: E402
     locate_video,
     notify,
     safe_shot,
+    settle_landing,
 )
 from ocs_click_play import urlopen_local  # noqa: E402  # 打本机的请求直连，绕开系统代理
 
@@ -219,7 +222,9 @@ def ensure_ocs_browser(log: Log, ocs_port: int, browser_port: int,
     cmd = [sys.executable, str(LAUNCHER), "--port", str(ocs_port), "--no-wait"]
     if name:
         cmd += ["--name", name]
-    rc = subprocess.run(cmd, cwd=str(HERE)).returncode
+    # 它的中文按 UTF-8 编出来 —— 中文 Windows 上子进程默认拿 cp936，跟父进程这边
+    # （ocs_video_test 里把 stdout 设成 UTF-8 了）对不上，日志里就是"目标"变"Ŀ��"。
+    rc = subprocess.run(cmd, cwd=str(HERE), env=dict(os.environ, PYTHONIOENCODING="utf-8")).returncode
     if rc != 0:
         log(f"[x] 点启动失败（exit={rc}）。OCS 是不是没带 --remote-debugging-port 启动？")
         return False
@@ -509,18 +514,24 @@ def main() -> int:
 
         if not browser.contexts:
             log("[x] 没有 context")
+            push("❌ OCS 测试异常中断", f"{args.browser}: 接管的浏览器一个 context 都没有")
             return 1
         ctx = browser.contexts[0]
 
+        # 接管阶段的失败也要推 —— 半夜没人看着，没推送到手机上就等于没发生。
         page = pick_target_page(ctx, log, land_url)
         if page is None:
+            push("❌ OCS 测试异常中断", f"{args.browser}: 接管后没找到超星页面（报告 {outdir.name}）")
             return 1
         page = pick_landing(ctx, log, page)
         if page is None:
+            push("❌ OCS 测试异常中断", f"{args.browser}: 落到 i.chaoxing.com 上的那页认不出来")
             return 1
         close_stale_tabs(ctx, page, log)
         safe_shot(page, shots / "step0_landing.png", log)
         log(f"    落地标题: {page.title()}")
+        # 冷启动那一路（OCS 刚把浏览器拉起来）落地即点，多半点了个空 —— 等它加载完再动
+        settle_landing(page, log)
 
         try:
             course = args.course or cfg.get("course_name") or COURSE_NAME
@@ -680,6 +691,21 @@ def main() -> int:
                 push("✅ 积分已刷满", f"{args.browser}: {score_before} → {score_after}")
 
             rc = 0 if ok else 1
+        except Exception as e:
+            # 这一段以前是裸的 try/finally：步骤里抛出来的异常直接穿到最外层，
+            # 只留一个 traceback，Bark 一条都不推 —— 2026-10-07 01:42 那轮就是这么
+            # 静悄悄挂掉的（调度器还按"自己的 Bark 已经推过了"处理）。
+            # 点击流程里任何一步挂掉，都得让人在手机上知道，并且知道挂在哪。
+            log("")
+            log("[x] 测试中断，异常如下（这一步之后的事都没做）：")
+            for line in traceback.format_exc().splitlines():
+                log(f"    {line}")
+            for pg in ctx.pages:
+                if safe_shot(pg, shots / "exception.png", log):
+                    break
+            rc = 1
+            push("❌ OCS 测试异常中断",
+                 f"{args.browser}: {type(e).__name__}: {str(e)[:140]}（报告 {outdir.name}）")
         finally:
             if not args.keep_open:
                 log("[*] 关掉浏览器")

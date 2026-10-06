@@ -43,6 +43,13 @@ except Exception:
     pass
 
 try:
+    # stderr 也要重设。只设 stdout 的话，异常 traceback 还是按 GBK 编出去，
+    # ocs_schedule 按 UTF-8 一读整段就成乱码（2026-10-07 01:42 那轮的报错就是这么糊掉的）。
+    sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+except Exception:
+    pass
+
+try:
     from playwright.sync_api import sync_playwright
 except ImportError:
     print()
@@ -84,6 +91,13 @@ def build_steps(course: str = COURSE_NAME, video: str = VIDEO_NAME) -> list[dict
             "n": 3,
             "desc": "点击左侧【课程】入口",
             "selectors": [".icon-kc-s", "span.icon-space"],
+            # 这一步点完 URL 不变 —— 超星只是把课程列表灌进 #frame_content 那个 iframe
+            # （mooc2-ans.chaoxing.com），页面自己不动。所以"点成功没有"只能拿结果判断：
+            # 课程卡片有没有出现（verify）。服务器上流量全程走代理出去，这一步慢的时候
+            # 要几十秒，retries 是防页面刚跳完、JS 还没绑好时点一下等于没点。
+            "verify": f'a.color1:has-text("{course}")',
+            "result_wait": 45,
+            "retries": 2,
         },
         {
             "n": 4,
@@ -335,15 +349,95 @@ def _fresh_pages(ctx, before: set[str]) -> list:
             and not (p.url or "").startswith(TAB_SKIP_PREFIX)]
 
 
+# 等一个元素出现的默认上限。服务器上出网全程走代理，超星那些页面慢起来要几十秒
+# 才把卡片灌进 iframe；一次问不到就判失败，整轮 34 分钟就白跑了。
+WAIT_ELEMENT = 90.0
+POLL_SECS = 0.7
+
+
+def wait_visible(page, selectors: list[str], timeout: float = WAIT_ELEMENT, log: Log | None = None):
+    """轮询等元素出现，返回 (locator, selector, 匹配数)；超时给 (None, None, 0)。
+
+    每轮都重新列一遍 page.frames —— iframe 是页面加载过程中才冒出来的，
+    只列一次的话，慢网下永远看不到里面那些还没建好的课程卡片。
+    """
+    deadline = time.time() + max(0.0, timeout)
+    last_note = time.time()
+    while True:
+        loc, sel, n = first_visible(page, selectors)
+        if loc is not None:
+            return loc, sel, n
+        if time.time() >= deadline:
+            return None, None, 0
+        if log and time.time() - last_note >= 15:
+            last_note = time.time()
+            log(f"    ...还在等：{', '.join(s[:40] for s in selectors)}")
+        time.sleep(POLL_SECS)
+
+
+def dump_page_state(ctx, page, log: Log):
+    """找不到元素时，把"当时页面上到底有什么"写进日志。
+
+    光一张截图分不清三种情况：页面还没加载完、课程名对不上、点错了地方。
+    frame 列表 + 每帧里的链接文字一摆出来，一眼就能分清。
+    """
+    try:
+        frames = list(page.frames)
+    except Exception:
+        frames = []
+    log(f"    当前页 {page.url[:110]}")
+    log(f"    共 {len(frames)} 个 frame：")
+    for i, fr in enumerate(frames):
+        # 每一帧都单独包起来：这是失败路径上的诊断代码，frame 中途 detach 掉很正常，
+        # 它自己抛异常会把真正的错误盖掉。
+        try:
+            url = (fr.url or "")[:110]
+            n_a = fr.locator("a").count()
+            links = fr.eval_on_selector_all(
+                "a", "els => els.map(e => (e.innerText||'').trim()).filter(Boolean).slice(0,15)")
+        except Exception:
+            log(f"      [{i}] （读不到内容，frame 可能已经没了）")
+            continue
+        log(f"      [{i}] a×{n_a}  {url}")
+        if links:
+            log(f"            {' | '.join(t[:30] for t in links)}")
+    log(f"    标签页 {len(ctx.pages)} 个：" + " , ".join((p.url or "")[:70] for p in ctx.pages))
+
+
+def settle_landing(page, log: Log, max_seconds: float = 30.0):
+    """接管之后、动手点之前，先等落地页自己安静下来。
+
+    服务器上这一页是刚从冷启动的浏览器里长出来的（OCS 起 Chrome → 扩展 → 自动登录
+    → 跳回 i.chaoxing.com），而且全程走代理出去，资源和 JS 比本机慢得多。
+    页面还没绑好就点，点了等于没点 —— 2026-10-07 01:42 那一轮的步骤 3 就是
+    "点下去了，URL 和 iframe 内容却一点没变"。这里等到 readyState=complete 再点。
+    """
+    deadline = time.time() + max_seconds
+    while time.time() < deadline:
+        try:
+            if page.evaluate("() => document.readyState") == "complete":
+                break
+        except Exception:
+            pass
+        time.sleep(0.5)
+    else:
+        log(f"    （落地页 {max_seconds:g}s 都还没加载完，不等了，照常往下走）")
+    time.sleep(2)          # 加载完之后页面自己还有一小段初始化
+    log("    落地页已就绪")
+
+
 def click_step(ctx, page, step: dict, log: Log, shots: Path):
     log(f"--- 步骤 {step['n']}：{step['desc']}")
-    loc, sel, total = first_visible(page, step["selectors"])
+    wait_s = step.get("wait", WAIT_ELEMENT)
+    loc, sel, total = wait_visible(page, step["selectors"], wait_s, log)
     if loc is None:
         shot = shots / f"step{step['n']}_NOTFOUND.png"
         safe_shot(page, shot, log)
+        log(f"    （等了 {wait_s:g}s 没等到，下面 dump 一下页面当时长什么样）")
+        dump_page_state(ctx, page, log)
         raise RuntimeError(
             f"步骤 {step['n']} 找不到可点击元素。试过 {step['selectors']}，"
-            f"当前 URL={page.url}（截图 {shot}）"
+            f"等了 {wait_s:g}s，当前 URL={page.url}（截图 {shot}）"
         )
     if total > 1:
         log(f"    ⚠️ {sel} 匹配到 {total} 个，取第一个可见的")
@@ -354,32 +448,59 @@ def click_step(ctx, page, step: dict, log: Log, shots: Path):
     before = {p.url for p in ctx.pages}
     known = set(ctx.pages)
     new_page = None
+    verified = False
+    verify = step.get("verify")
+    result_wait = step.get("result_wait", 60 if step.get("new_page") else 20)
 
-    # 点之前先把 expect_page 挂上。超星的课程卡片是 <a target="_blank">，卡片自己的 JS
-    # 可能又 window.open 一次 —— 点一下会连开两个一样的标签页，事件流比事后数数靠谱。
-    if step.get("new_page"):
-        try:
-            with ctx.expect_page(timeout=45000) as pinfo:
-                loc.click(timeout=30000)
-            new_page = pinfo.value
-            log("    → 捕获到新标签页事件")
-        except Exception as e:
-            log(f"    （没等到新标签页事件：{str(e).splitlines()[0][:60]}）")
-            log("      改用 URL 差集继续找")
-    else:
-        loc.click(timeout=30000)
+    # 点了不生效时得能自己再点一次。步骤 3 就是这种：页面刚跳完、JS 还没绑好时
+    # 点一下等于没点（URL 不变、iframe 里空着），成没成只能看 verify 那个元素出现没有。
+    attempts = 1 + max(0, int(step.get("retries", 0)))
+    for attempt in range(1, attempts + 1):
+        if attempt > 1:
+            log(f"    ↻ 再点一次（第 {attempt}/{attempts} 次）")
+            loc, sel, _n = wait_visible(page, step["selectors"], wait_s)
+            if loc is None:
+                log("      入口自己也找不到了，不再重试")
+                break
 
-    # 兜底 / 补充：按 URL 差集找这个窗口里新出现的页面。
-    # 不能按 len(ctx.pages) 判断 —— ctx.pages 的顺序不是创建顺序；也不能只等很短，
-    # 浏览器忙的时候新 target 上报会拖到 20s 以上（实测踩过）。
-    if new_page is None:
-        deadline = time.time() + (60 if step.get("new_page") else 20)
-        while time.time() < deadline:
+        # 点之前先把 expect_page 挂上。超星的课程卡片是 <a target="_blank">，卡片自己的 JS
+        # 可能又 window.open 一次 —— 点一下会连开两个一样的标签页，事件流比事后数数靠谱。
+        if step.get("new_page"):
+            try:
+                with ctx.expect_page(timeout=45000) as pinfo:
+                    loc.click(timeout=30000)
+                new_page = pinfo.value
+                log("    → 捕获到新标签页事件")
+            except Exception as e:
+                log(f"    （没等到新标签页事件：{str(e).splitlines()[0][:60]}）")
+                log("      改用 URL 差集继续找")
+        else:
+            loc.click(timeout=30000)
+
+        # 兜底 / 补充：按 URL 差集找这个窗口里新出现的页面。
+        # 不能按 len(ctx.pages) 判断 —— ctx.pages 的顺序不是创建顺序；也不能只等很短，
+        # 浏览器忙的时候新 target 上报会拖到 20s 以上（实测踩过）。
+        # 同一段等待里顺带盯 verify：页面自己不跳、只往 iframe 里灌内容的那种入口，
+        # "该出现的元素出现了"就是成功信号，不用干等新标签页。
+        deadline = time.time() + result_wait
+        while new_page is None and time.time() < deadline:
             fresh = _fresh_pages(ctx, before)
             if fresh:
                 new_page = fresh[0]
+                log("    → 冒出新标签页（URL 差集）")
+                break
+            if verify and first_visible(page, [verify])[0] is not None:
+                verified = True
+                log(f"    ✓ 该出现的已经出现：{verify}")
                 break
             time.sleep(0.5)
+
+        if new_page is not None or verified or not verify:
+            break
+        log(f"    ✗ {result_wait:g}s 内没等到 {verify}")
+
+    if verify and not verified and new_page is None:
+        log(f"    ⚠️ 点了 {attempt} 次也没等到 {verify} —— 接着往下走，多半会在下一步报错")
 
     if new_page is not None:
         # 其余同批冒出来的（重复打开的）收掉

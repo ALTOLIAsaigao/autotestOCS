@@ -43,6 +43,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import subprocess
 import sys
 import time
@@ -189,16 +190,29 @@ def run_instance(it: dict, cfg: dict, args) -> int:
     log(f"=== 实例 {name} 开跑（放 {pm:g} 分钟）→ {out.name}")
     log(f"    {' '.join(cmd[1:])}")
     rc = None
+    said = []          # 子进程吐出来的每一行，下面判断它到底有没有推成
     with open(out, "w", encoding="utf-8", errors="replace") as f:
         p = subprocess.Popen(cmd, cwd=str(HERE), stdout=subprocess.PIPE,
                              stderr=subprocess.STDOUT, text=True,
-                             encoding="utf-8", errors="replace", bufsize=1)
+                             encoding="utf-8", errors="replace", bufsize=1,
+                             # 下面就是按 UTF-8 读的，子进程也必须按 UTF-8 写。
+                             # 不写这条的话，中文 Windows 上子进程默认 cp936，
+                             # 转出来的日志里中文全是乱码（见 2026-10-07 01:42 那轮）。
+                             env=dict(os.environ, PYTHONIOENCODING="utf-8"))
         for line in p.stdout:
             line = line.rstrip("\n")
+            said.append(line)
             f.write(line + "\n")
             print(f"    │ {line}", flush=True)
         rc = p.wait()
     log(f"=== 实例 {name} 结束，退出码 {rc}，日志 {out}" + ("（通过）" if rc == 0 else "（没通过）"))
+
+    # 兜底再推一条。子进程正常跑到失败分支时会自己推（日志里会有"Bark 推送成功"），
+    # 但只要它崩在半路、被杀了、或者它自己那条没推出去，这一轮就彻底静默了 ——
+    # 2026-10-07 01:42 那轮就是这样：测试挂了、Bark 一条没有、这里还印"已经推过了"。
+    if rc != 0 and not any("Bark 推送成功" in l for l in said):
+        log("[!] 子进程没有推成功的记录，调度器兜底推一条")
+        push(cfg, "❌ OCS 实例没跑完", f"实例 {name} 退出码 {rc}，日志 {out.name}", args.no_bark)
     return rc
 
 
