@@ -21,11 +21,22 @@ ocs_drive.py        OCS 自己启动它配置好的那个浏览器实例 —— 
     [1] CDP 到 OCS 渲染进程(9222) -> 点实例行上的 play_circle
     [2] OCS fork script.js -> Playwright launchPersistentContext -> Chrome
         （worker 补丁会让这只 Chrome 额外带 --remote-debugging-port=9223）
+        -> 端口一通就把窗口最大化（浏览器级 CDP，见 maximize_browser）
     [3] 等超星自动登录脚本把页面带到 i.chaoxing.com
     [4] Playwright connect_over_cdp(9223) 接管那个 context
     [5] 按 build_steps 点进视频页 -> 确认在播 -> 之后**不碰这个页面**
     [6] 放够 play_minutes 分钟 -> 关掉视频页 -> 回课程首页刷新
     [7] 读 p#dayScore：到 32 就算通过，没到推 Bark 让人手动处理 -> 关浏览器
+
+窗口为什么要最大化
+--------------------------------------------------------------------------
+OCS 是 `viewport: null` 起的（worker/index.js 的 launchBrowser），窗口多大页面就
+多大 —— 默认那个小窗口会让元素可见性、坐标全按小视口算，是一大堆"元素看不见 /
+点不着"的源头。所以浏览器 CDP 端口一通就先把它最大化（`maximize_browser`）。
+
+不用启动参数加 `--start-maximized` 的原因：OCS 的 launch 里写死了
+`args: ['--window-position=0,0', ...]`，而 Chrome 只要有显式窗口位置参数就会
+用普通窗口摆在那儿，把 `--start-maximized` 吃掉。实测过，详见 maximize_browser。
 
 为什么不再监视播放过程
 --------------------------------------------------------------------------
@@ -167,6 +178,67 @@ def http_targets(port: int) -> list[dict]:
             return json.loads(r.read().decode("utf-8"))
     except Exception:
         return []
+
+
+def maximize_browser(port: int, log: Log, retries: int = 1) -> bool:
+    """把这只浏览器的主窗口最大化。
+
+    OCS 那边是 `viewport: null` 起的（worker/index.js 的 launchBrowser），窗口多大
+    页面就多大 —— 默认那个小窗口会让元素的可见性、坐标全按小视口算。最大化之后
+    这些值才是大视口下的稳定值。
+
+    为什么不用启动参数（试过，不行）：给启动参数加 `--start-maximized` 在 OCS 这里
+    是**无效**的。Chrome 一旦同时拿到任何显式的窗口位置/尺寸参数，就会用那个参数
+    老老实实摆一个普通窗口，把 `--start-maximized` 吃掉 —— 而 OCS 的 launch 里写死了
+    `args: ['--window-position=0,0', ...]`。实测（Chrome for Testing 137）：
+        --start-maximized                          -> maximized  ✅
+        --start-maximized --window-position=0,0    -> normal     ❌
+        --window-position=0,0 --start-maximized    -> normal     ❌（OCS 就是这个顺序）
+    所以只能走 CDP 这条实打实管用的路。
+
+    Browser.getWindowForTarget / setWindowBounds 是**浏览器级**命令，走 /json/version
+    那个 webSocketDebuggerUrl —— 不是页面级的 CDP 连接，一个字节都不会发给页面。
+    所以它可以在"等登录跳转"之前就调用，不碰那个"跳转途中 attach 会把页面卡死"的坑。
+
+    最大化只是让后面稳一点，做不到不该把整轮拖下水 —— 失败就返回 False。
+    """
+    last = ""
+    for attempt in range(max(1, retries)):
+        if attempt:
+            time.sleep(2)
+        v = port_version(port)
+        if not v:
+            last = "浏览器端口不通"
+            continue
+        tid = next((t.get("id") for t in http_targets(port) if t.get("type") == "page"), None)
+        if not tid:
+            last = "还没有 page 目标"
+            continue
+        try:
+            from ocs_click_play import WebSocket  # 纯标准库的 CDP 客户端，用到才导
+            ws = WebSocket(v["webSocketDebuggerUrl"])
+            ws.connect()
+            try:
+                win = ws.call("Browser.getWindowForTarget", {"targetId": tid}, timeout=8) or {}
+                wid = win.get("windowId")
+                if wid is None:
+                    last = f"没拿到 windowId：{win}"
+                    continue
+                before = (win.get("bounds") or {}).get("windowState") or "未知"
+                ws.call("Browser.setWindowBounds",
+                        {"windowId": wid, "bounds": {"windowState": "maximized"}}, timeout=8)
+                log(f"[+] 浏览器窗口已最大化（之前是 {before}）")
+                return True
+            finally:
+                try:
+                    ws.close()
+                except Exception:
+                    pass
+        except Exception as e:
+            last = str(e).splitlines()[0][:70]
+
+    log(f"    （没法最大化，继续跑：{last}）")
+    return False
 
 
 def wait_login_page(port: int, log: Log, seconds: float = 180):
@@ -499,6 +571,11 @@ def main() -> int:
 
     if not ensure_ocs_browser(log, args.ocs_port, args.browser_port, args.browser, args.skip_launch):
         return 2
+
+    # 浏览器一上来就最大化，赶在点任何东西之前。放在这里（而不是接管之后）是安全的：
+    # maximize_browser 走的是浏览器级 CDP，不碰页面，所以不违反下面那条"先等跳转、
+    # 再接管"的规矩 —— 那条规矩针对的是 Playwright 的页面级 attach。
+    maximize_browser(args.browser_port, log, retries=5)
 
     # 顺序很重要：先把页面等到位，再接管。反过来会把登录那次跳转卡死。
     land_url = wait_login_page(args.browser_port, log, args.page_wait)

@@ -14,6 +14,7 @@ OCS 拉起的浏览器是它自己用 Playwright `launchPersistentContext` 起�
 [1] CDP 连 OCS 渲染进程(9222) ──► 点实例行上的 ▶
 [2] OCS fork script.js ──► Playwright launchPersistentContext ──► Chrome
         └─ ocs_patch.py 给它加的启动参数：--remote-debugging-port=9223
+        └─ 端口一通就把窗口最大化（CDP Browser.setWindowBounds）
 [3] 等超星自动登录脚本把页面带到 i.chaoxing.com（**只轮询 /json，先不接管**）
 [4] Playwright connect_over_cdp(9223) 接管那个 context
 [5] 点四步进视频页 ──► 确认在播 ──► 之后这个页面一句 JS 都不发
@@ -28,6 +29,7 @@ OCS 拉起的浏览器是它自己用 Playwright `launchPersistentContext` 起�
 - **新标签页要挂 `expect_page()`**。课程卡片和知识点封面都是 `<a target="_blank">`，点一下另开标签页；光轮询 URL 差集在浏览器忙的时候会漏。
 - **`browser.close()` 关不掉这只 Chrome**。`connect_over_cdp` 拿到的 browser 调 `close()` 只是断连接，进程还活着、9223 还在响应，下一轮接管会认到上一轮残留的页签。真正关掉要发 CDP `Browser.close`（`ocs_drive.py:close_browser()` 干的就是这个，关不掉会推 Bark）。
 - **起点页要校正**。OCS 在当天没刷满时会自己把浏览器拉起来放视频，接管时常常已经开着上一轮的 `tsjy` / `studentstudy` 页签，按 URL 挑目标页会挑错，所以接管后先认 `i.chaoxing.com` 的页签、顺手把残留页签收掉。
+- **窗口要最大化，而且只能走 CDP**。OCS 是 `viewport: null` 起的（见 `worker/index.js` 的 `launchBrowser`），窗口多大页面就多大 —— 默认那个小窗口会让元素可见性、坐标全按小视口算。所以浏览器 CDP 端口一通，`ocs_drive.py:maximize_browser()` 就用 `Browser.setWindowBounds` 把它收成最大化。**不要改用启动参数 `--start-maximized`**：OCS 的 launch 里写死了 `--window-position=0,0`，而 Chrome 只要拿到显式窗口位置就把 `--start-maximized` 吃掉（实测 Chrome for Testing 137：光 `--start-maximized` → maximized；和 `--window-position=0,0` 同时给 → normal，两种顺序都是）。`setWindowBounds` 这条实测管用。
 
 ## 装
 
